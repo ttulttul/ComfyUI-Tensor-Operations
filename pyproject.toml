@@ -1,0 +1,14 @@
+[project]
+name = "comfyui-tensor-operations"
+description = "This repo contains nodes for ComfyUI that implement some helpful operations on tensors, such as normalization."
+version = "1.0.0"
+license = "LICENSE"
+
+[project.urls]
+Repository = "https://github.com/ttulttul/ComfyUI-Tensor-Operations"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "ComfyUI-Tensor-Operations"
+Icon = ""
