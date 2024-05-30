@@ -1,4 +1,7 @@
 import logging
+from PIL import Image, ImageEnhance, ImageFilter
+import numpy as np
+import random
 import torch
 
 @torch.no_grad()
@@ -65,8 +68,106 @@ class ImageMatchNormalize:
 
         normalized_image = normalized.permute(0,2,3,1)
         return (normalized_image,)
-    
+
+# PIL to Tensor
+def pil2tensor(image):
+    return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
+
+# Tensor to PIL
+def tensor2pil(image):
+    return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
+
+def image2noise(
+    image: Image.Image,
+    num_colors: int = 16,
+    black_mix: float = 0.0,
+    brightness: float = 1.0,
+    gaussian_mix: float = 0.0,
+    seed: int = 0
+) -> Image.Image:
+    # Set the seed for reproducibility
+    random.seed(seed)
+    torch.manual_seed(seed)
+
+    # Quantize the image to reduce colors
+    image = image.quantize(colors=num_colors)
+    image = image.convert("RGBA")
+
+    # Convert image to tensor
+    pixel_data = np.array(image)
+    tensor_image = torch.from_numpy(pixel_data).float().cuda()
+
+    # Randomly shuffle pixels
+    perm = torch.randperm(tensor_image.nelement() // 4).cuda()
+    tensor_image = tensor_image.view(-1, 4)[perm].view(*tensor_image.shape)
+
+    # Create black noise tensor
+    if black_mix > 0.0:
+        # Ignore the alpha channel.
+        random_tensor = torch.randn_like(tensor_image[:3, :, :])
+        mask = random_tensor < black_mix
+        tensor_image[:3, :, :][mask] = 0
+
+    # Apply brightness enhancement
+    tensor_image[:, :, :3] = tensor_image[:, :, :3] * brightness
+
+    # Apply Gaussian blur if specified
+    if gaussian_mix > 0:
+        import torch.nn.functional as F
+        kernel_size = int(gaussian_mix * 2 + 1)
+        padding = kernel_size // 2
+        gaussian_kernel = torch.exp(-0.5 * (torch.arange(-padding, padding + 1, dtype=torch.float32) ** 2) / gaussian_mix ** 2)
+        gaussian_kernel = gaussian_kernel / gaussian_kernel.sum()
+        gaussian_kernel = gaussian_kernel.view(1, 1, -1).cuda()
+
+        for i in range(3):
+            channel = tensor_image[:, :, i].unsqueeze(0).unsqueeze(0)
+            blurred = F.pad(channel, (padding, padding, padding, padding), mode='reflect')
+            blurred = F.conv2d(blurred, gaussian_kernel.view(1, 1, -1, 1), padding=0, stride=1)
+            blurred = F.conv2d(blurred, gaussian_kernel.view(1, 1, 1, -1), padding=0, stride=1)
+            tensor_image[:, :, i] = blurred.squeeze(0).squeeze(0)[:, :tensor_image.shape[1]]
+
+    # Convert tensor back to image
+    tensor_image = tensor_image.clamp(0, 255).byte().cpu().numpy()
+    randomized_image = Image.fromarray(tensor_image)
+
+    return randomized_image
+
+
+class ImageToNoise:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "num_colors": ("INT", {"default": 16, "max": 256, "min": 2, "step": 2}),
+                "black_mix": ("FLOAT", {"default": 0.0, "max": 1.0, "min": 0.0, "step": 0.1}),
+                "gaussian_mix": ("FLOAT", {"default": 0.0, "max": 1024, "min": 0, "step": 0.1}),
+                "brightness": ("FLOAT", {"default": 1.0, "max": 2.0, "min": 0.0, "step": 0.01}),
+                "output_mode": (["batch","list"],),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    OUTPUT_IS_LIST = (False,)
+    FUNCTION = "image_to_noise"
+
+    CATEGORY = "WAS Suite/Image/Generate/Noise"
+
+    def image_to_noise(self, images, num_colors, black_mix, gaussian_mix, brightness, output_mode, seed):
+        noise_images = []
+        for image in images:
+            noise_images.append(pil2tensor(image2noise(tensor2pil(image), num_colors, black_mix, brightness, gaussian_mix, seed)))
+        if output_mode == "list":
+            self.OUTPUT_IS_LIST = (True,)
+        else:
+            noise_images = torch.cat(noise_images, dim=0)
+        return (noise_images, )
+
 NODE_CLASS_MAPPINGS = {
     "Image Match Normalize": ImageMatchNormalize,
-    "Latent Match Normalize": LatentMatchNormalize
+    "Latent Match Normalize": LatentMatchNormalize,
+    "Fast Image to Noise": ImageToNoise,
 }
