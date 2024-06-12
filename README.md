@@ -26,3 +26,11 @@ This node returns a normalized version of the target latent using the mean and s
 the source latent. Latents encode color information differently than images and you may find that normalizing an image
 by instead normalizing its latent representation results in a "better" result that is closer to the coloring of the
 source.
+
+### Fast Image to Noise
+
+Generates a new image by remixing the pixels of the source image randomly,
+optionally altering the brightness and making other tweaks. This node is
+intended to match the functionality of the `Image to Noise` node in the [WAS
+Node Suite](https://github.com/WASasquatch/was-node-suite-comfyui) but for some
+reason results aren't identical.
