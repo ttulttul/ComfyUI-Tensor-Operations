@@ -4,6 +4,11 @@ This repo contains nodes for [ComfyUI](https://github.com/comfyanonymous/ComfyUI
 
 ## Updates
 
+### June 12th, 2024
+
+- Added `Fast Image to Noise` node, which generates a new image that is effectively a remix of the pixels in a source image.
+- This is all done on the GPU and is lightning fast in comparison with the [WAS Node Suite](https://github.com/WASasquatch/was-node-suite-comfyui) `Image to Noise` node.
+
 ### February 2nd, 2024
 
 - Initial release. Added `Image Match Normalize` and `Latent Match Normalize` nodes.
