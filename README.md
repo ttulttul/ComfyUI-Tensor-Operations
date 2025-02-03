@@ -30,7 +30,18 @@ source.
 ### Fast Image to Noise
 
 Generates a new image by remixing the pixels of the source image randomly,
-optionally altering the brightness and making other tweaks. This node is
-intended to match the functionality of the `Image to Noise` node in the [WAS
-Node Suite](https://github.com/WASasquatch/was-node-suite-comfyui) but for some
-reason results aren't identical.
+with several customization options:
+
+- **num_colors**: Number of colors to sample for the noise palette (2-256)
+- **black_mix**: Probability of replacing pixels with black (0-1)
+- **gaussian_mix**: Amount of Gaussian blur to apply (0-1024)
+- **brightness**: Brightness adjustment factor (0-2)
+- **mask**: Optional mask input that restricts color palette selection to masked areas only
+- **output_mode**: Choose between "batch" or "list" output format
+- **seed**: Random seed for reproducible results
+
+The node is intended to match the functionality of the `Image to Noise` node in the [WAS
+Node Suite](https://github.com/WASasquatch/was-node-suite-comfyui) but operates entirely
+on the GPU for significantly faster processing. When a mask is provided, the node will only
+sample colors from the masked (white) areas of the image to create the noise palette,
+allowing for more targeted noise generation.
