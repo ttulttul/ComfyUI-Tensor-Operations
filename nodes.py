@@ -77,8 +77,22 @@ def pil2tensor(image):
 def tensor2pil(image):
     return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
 
+def resize_mask(mask_tensor, target_height, target_width):
+    """Resize mask tensor to target dimensions using PIL"""
+    # Convert tensor to PIL Image
+    mask_np = (mask_tensor.cpu().numpy() * 255).astype(np.uint8)
+    mask_pil = Image.fromarray(mask_np)
+
+    # Resize using nearest neighbor to preserve binary values
+    resized_mask = mask_pil.resize((target_width, target_height), Image.Resampling.NEAREST)
+
+    # Convert back to tensor
+    resized_np = np.array(resized_mask).astype(np.float32) / 255.0
+    return torch.from_numpy(resized_np)
+
 def image2noise(
     image: Image.Image,
+    mask_tensor: torch.Tensor = None,
     num_colors: int = 16,
     black_mix: float = 0.0,
     brightness: float = 1.0,
@@ -97,35 +111,94 @@ def image2noise(
     pixel_data = np.array(image)
     tensor_image = torch.from_numpy(pixel_data).float().cuda()
 
-    # Randomly shuffle pixels
-    perm = torch.randperm(tensor_image.nelement() // 4).cuda()
-    tensor_image = tensor_image.view(-1, 4)[perm].view(*tensor_image.shape)
+    print(f'tensor_image: {tensor_image.shape}')
 
-    # Create black noise tensor
+    # If no mask provided, use the entire image for the color palette
+    if mask_tensor is None:
+        mask_tensor = torch.zeros((image.height, image.width), dtype=torch.float32, device='cuda')
+        print(f'image2noise: created empty mask tensor: {mask_tensor.shape}')
+    else:
+        # Ensure mask is on CPU for resize operation
+        mask_tensor = mask_tensor.cpu()
+
+        # Check if resize is needed
+        if mask_tensor.shape != (image.height, image.width):
+            mask_tensor = resize_mask(mask_tensor, image.height, image.width)
+
+        # Move to CUDA after processing
+        mask_tensor = mask_tensor.cuda()
+        print(f'image2noise: resized mask tensor to: {mask_tensor.shape}')
+
+    # Create a flattened index of unmasked pixels
+    flat_mask = mask_tensor.reshape(-1)
+    unmasked_indices = torch.nonzero(flat_mask == 0).squeeze(1)
+
+    print(f'image2noise: unmasked_indices has length {len(unmasked_indices)}')
+
+    if len(unmasked_indices) > 0:
+        # Reshape tensor_image to [H*W, 4]
+        flat_image = tensor_image.reshape(-1, 4)
+
+        # Get unmasked pixels
+        unmasked_pixels = flat_image[unmasked_indices]
+
+        # Shuffle unmasked pixels
+        if len(unmasked_indices) > 1:
+            perm = torch.randperm(len(unmasked_indices), device='cuda')
+            shuffled_pixels = unmasked_pixels[perm]
+
+            # Place shuffled pixels back in their unmasked positions
+            flat_image[unmasked_indices] = shuffled_pixels
+        else:
+            print(f'image2noise: not enough masked pixels to shuffle')
+
+        # Reshape back to original shape
+        tensor_image = flat_image.reshape(tensor_image.shape)
+    else:
+        print(f'image2noise: unmasked_indices is empty')
+
+    # Create black noise tensor only in unmasked regions
     if black_mix > 0.0:
-        # Ignore the alpha channel.
-        random_tensor = torch.randn_like(tensor_image[:3, :, :])
-        mask = random_tensor < black_mix
-        tensor_image[:3, :, :][mask] = 0
+        random_tensor = torch.randn_like(tensor_image[..., :3])
+        black_mask = (random_tensor < black_mix) & (mask_tensor.unsqueeze(-1) == 0)
+        tensor_image[..., :3][black_mask] = 0
 
-    # Apply brightness enhancement
-    tensor_image[:, :, :3] = tensor_image[:, :, :3] * brightness
+    # Apply brightness enhancement only to unmasked regions
+    brightness_mask = (mask_tensor == 0).unsqueeze(-1).expand(-1, -1, 3)
+    tensor_image[..., :3][brightness_mask] *= brightness
 
-    # Apply Gaussian blur if specified
+    # Apply Gaussian blur if specified, respecting the mask
     if gaussian_mix > 0:
         import torch.nn.functional as F
         kernel_size = int(gaussian_mix * 2 + 1)
         padding = kernel_size // 2
-        gaussian_kernel = torch.exp(-0.5 * (torch.arange(-padding, padding + 1, dtype=torch.float32) ** 2) / gaussian_mix ** 2)
+        gaussian_kernel = torch.exp(-0.5 * (torch.arange(-padding, padding + 1, dtype=torch.float32, device='cuda') ** 2) / gaussian_mix ** 2)
         gaussian_kernel = gaussian_kernel / gaussian_kernel.sum()
-        gaussian_kernel = gaussian_kernel.view(1, 1, -1).cuda()
+        gaussian_kernel = gaussian_kernel.view(1, 1, -1)
+
+        # Create a mask for the blur operation
+        blur_mask = (mask_tensor == 0).float()
 
         for i in range(3):
-            channel = tensor_image[:, :, i].unsqueeze(0).unsqueeze(0)
+            channel = tensor_image[..., i].clone()
+
+            # Apply mask before blurring
+            channel = channel * blur_mask
+
+            # Add batch and channel dimensions for conv2d
+            channel = channel.unsqueeze(0).unsqueeze(0)
+
+            # Apply blur
             blurred = F.pad(channel, (padding, padding, padding, padding), mode='reflect')
-            blurred = F.conv2d(blurred, gaussian_kernel.view(1, 1, -1, 1), padding=0, stride=1)
-            blurred = F.conv2d(blurred, gaussian_kernel.view(1, 1, 1, -1), padding=0, stride=1)
-            tensor_image[:, :, i] = blurred.squeeze(0).squeeze(0)[:, :tensor_image.shape[1]]
+            blurred = F.conv2d(blurred, gaussian_kernel.view(1, 1, -1, 1))
+            blurred = F.conv2d(blurred, gaussian_kernel.view(1, 1, 1, -1))
+
+            # Remove batch and channel dimensions
+            blurred = blurred.squeeze(0).squeeze(0)
+
+            # Only update unmasked regions
+            unmasked = blur_mask == 1
+            tensor_image[..., i][unmasked] = blurred[unmasked]
 
     # Convert tensor back to image
     tensor_image = tensor_image.clamp(0, 255).byte().cpu().numpy()
@@ -133,6 +206,104 @@ def image2noise(
 
     return randomized_image
 
+def image2noise_new(
+    image: Image.Image,
+    mask_tensor: torch.Tensor = None,
+    num_colors: int = 16,
+    black_mix: float = 0.0,
+    brightness: float = 1.0,
+    gaussian_mix: float = 0.0,
+    seed: int = 0
+) -> Image.Image:
+    # Set the seed for reproducibility
+    random.seed(seed)
+    torch.manual_seed(seed)
+
+    # Convert image to tensor
+    pixel_data = np.array(image)
+    tensor_image = torch.from_numpy(pixel_data).float().cuda()
+
+    # Store original shape for later reshaping
+    original_shape = tensor_image.shape
+    num_channels = original_shape[-1]  # Should be 4 for RGBA
+
+    # If no mask provided, use the entire image for color palette
+    if mask_tensor is None:
+        mask_tensor = torch.zeros((image.height, image.width), dtype=torch.float32, device='cuda')
+    else:
+        # Ensure mask is on CPU for resize operation
+        mask_tensor = mask_tensor.cpu()
+
+        # Check if resize is needed
+        if mask_tensor.shape != (image.height, image.width):
+            mask_tensor = resize_mask(mask_tensor, image.height, image.width)
+
+        # Move to CUDA after processing
+        mask_tensor = mask_tensor.cuda()
+
+    # Reshape tensor_image to [H*W, C]
+    flat_image = tensor_image.reshape(-1, num_channels)
+    flat_mask = mask_tensor.reshape(-1)
+
+    # Extract colors from unmasked regions for palette generation
+    unmasked_indices = torch.nonzero(flat_mask == 0).squeeze(1)
+
+    # Get color palette from unmasked regions
+    if len(unmasked_indices) > 0:
+        # Ensure we don't try to select more colors than we have pixels
+        num_available_colors = len(unmasked_indices)
+        actual_num_colors = min(num_colors, num_available_colors)
+
+        # Randomly select pixels from unmasked regions for the palette
+        if num_available_colors > actual_num_colors:
+            palette_indices = torch.randperm(num_available_colors, device='cuda')[:actual_num_colors]
+            selected_indices = unmasked_indices[palette_indices]
+        else:
+            selected_indices = unmasked_indices
+
+        color_palette = flat_image[selected_indices]
+    else:
+        # If mask covers everything, sample from the entire image
+        num_available_colors = len(flat_image)
+        actual_num_colors = min(num_colors, num_available_colors)
+        palette_indices = torch.randperm(num_available_colors, device='cuda')[:actual_num_colors]
+        color_palette = flat_image[palette_indices]
+
+    # Generate random indices for the entire image
+    num_pixels = original_shape[0] * original_shape[1]
+    random_indices = torch.randint(0, len(color_palette), (num_pixels,), device='cuda')
+
+    # Create new noise image using the color palette
+    noise_image = color_palette[random_indices].reshape(original_shape)
+
+    # Apply black mix if specified
+    if black_mix > 0.0:
+        black_mask = torch.rand_like(noise_image[..., 0]) < black_mix
+        noise_image[black_mask, :3] = 0
+
+    # Apply brightness adjustment
+    noise_image[..., :3] *= brightness
+
+    # Apply Gaussian blur if specified
+    if gaussian_mix > 0:
+        import torch.nn.functional as F
+        kernel_size = int(gaussian_mix * 2 + 1)
+        padding = kernel_size // 2
+        gaussian_kernel = torch.exp(-0.5 * (torch.arange(-padding, padding + 1, dtype=torch.float32, device='cuda') ** 2) / gaussian_mix ** 2)
+        gaussian_kernel = gaussian_kernel / gaussian_kernel.sum()
+        gaussian_kernel = gaussian_kernel.view(1, 1, -1)
+
+        for i in range(3):  # Only blur RGB channels, not alpha
+            channel = noise_image[..., i].clone()
+            channel = channel.unsqueeze(0).unsqueeze(0)
+            blurred = F.pad(channel, (padding, padding, padding, padding), mode='reflect')
+            blurred = F.conv2d(blurred, gaussian_kernel.view(1, 1, -1, 1))
+            blurred = F.conv2d(blurred, gaussian_kernel.view(1, 1, 1, -1))
+            noise_image[..., i] = blurred.squeeze(0).squeeze(0)
+
+    # Convert tensor back to image
+    noise_image = noise_image.clamp(0, 255).byte().cpu().numpy()
+    return Image.fromarray(noise_image)
 
 class ImageToNoise:
     @classmethod
@@ -147,6 +318,9 @@ class ImageToNoise:
                 "output_mode": (["batch","list"],),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
             },
+            "optional": {
+                "mask": ("MASK",),  # Made mask optional
+            }
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -156,10 +330,12 @@ class ImageToNoise:
 
     CATEGORY = "WAS Suite/Image/Generate/Noise"
 
-    def image_to_noise(self, images, num_colors, black_mix, gaussian_mix, brightness, output_mode, seed):
+    def image_to_noise(self, images, num_colors, black_mix, gaussian_mix, brightness, output_mode, seed, mask=None):
         noise_images = []
-        for image in images:
-            noise_images.append(pil2tensor(image2noise(tensor2pil(image), num_colors, black_mix, brightness, gaussian_mix, seed)))
+        for i, image in enumerate(images):
+            # Get corresponding mask for this image if mask is provided
+            current_mask = mask[i] if mask is not None and len(mask) > i else None
+            noise_images.append(pil2tensor(image2noise_new(tensor2pil(image), current_mask, num_colors, black_mix, brightness, gaussian_mix, seed)))
         if output_mode == "list":
             self.OUTPUT_IS_LIST = (True,)
         else:
