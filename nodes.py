@@ -251,7 +251,7 @@ class ImageToNoise:
         for i, image in enumerate(images):
             # Get corresponding mask for this image if mask is provided
             current_mask = mask[i] if mask is not None and len(mask) > i else None
-            noise_images.append(pil2tensor(image2noise_new(tensor2pil(image), current_mask, num_colors, black_mix, brightness, gaussian_mix, seed)))
+            noise_images.append(pil2tensor(image2noise(tensor2pil(image), current_mask, num_colors, black_mix, brightness, gaussian_mix, seed)))
         if output_mode == "list":
             self.OUTPUT_IS_LIST = (True,)
         else:
