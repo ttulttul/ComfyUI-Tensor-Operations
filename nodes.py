@@ -234,8 +234,8 @@ def image2noise_new(
         raise ValueError(f"Expected tensor_image to have 3 dimensions (H,W,C), got shape {original_shape}")
     
     num_channels = original_shape[-1]
-    if num_channels != 4:
-        raise ValueError(f"Expected tensor_image to have 4 channels (RGBA), got {num_channels}")
+    if num_channels != 3:
+        raise ValueError(f"Expected tensor_image to have 3 channels (RGB), got {num_channels}")
 
     # If no mask provided, use the entire image for color palette
     if mask_tensor is None:
