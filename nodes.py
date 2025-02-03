@@ -269,24 +269,24 @@ def image2noise_new(
     if flat_mask.shape[0] != expected_pixels:
         raise ValueError(f"Flattened mask has wrong number of pixels. Expected {expected_pixels}, got {flat_mask.shape[0]}")
 
-    # Extract colors from unmasked regions for palette generation
-    unmasked_indices = torch.nonzero(flat_mask == 0).squeeze(1)
+    # Extract colors from masked regions for palette generation
+    masked_indices = torch.nonzero(flat_mask == 1).squeeze(1)
     
-    if unmasked_indices.dim() != 1:
-        raise ValueError(f"Unexpected unmasked_indices shape. Expected 1D tensor, got {unmasked_indices.dim()}D")
+    if masked_indices.dim() != 1:
+        raise ValueError(f"Unexpected masked_indices shape. Expected 1D tensor, got {masked_indices.dim()}D")
 
-    # Get color palette from unmasked regions
-    if len(unmasked_indices) > 0:
+    # Get color palette from masked regions
+    if len(masked_indices) > 0:
         # Ensure we don't try to select more colors than we have pixels
-        num_available_colors = len(unmasked_indices)
+        num_available_colors = len(masked_indices)
         actual_num_colors = min(num_colors, num_available_colors)
 
-        # Randomly select pixels from unmasked regions for the palette
+        # Randomly select pixels from masked regions for the palette
         if num_available_colors > actual_num_colors:
             palette_indices = torch.randperm(num_available_colors, device='cuda')[:actual_num_colors]
-            selected_indices = unmasked_indices[palette_indices]
+            selected_indices = masked_indices[palette_indices]
         else:
-            selected_indices = unmasked_indices
+            selected_indices = masked_indices
 
         color_palette = flat_image[selected_indices]
     else:
