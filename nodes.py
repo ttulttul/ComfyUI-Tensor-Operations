@@ -121,8 +121,13 @@ def image2noise(
         # Ensure mask is on CPU for resize operation
         mask_tensor = mask_tensor.cpu()
 
+        # Check mask dimensions
+        if len(mask_tensor.shape) != 2:
+            raise ValueError(f"Expected mask_tensor to have 2 dimensions (H,W), got shape {mask_tensor.shape}")
+            
         # Check if resize is needed
         if mask_tensor.shape != (image.height, image.width):
+            print(f"Resizing mask from {mask_tensor.shape} to ({image.height}, {image.width})")
             mask_tensor = resize_mask(mask_tensor, image.height, image.width)
 
         # Move to CUDA after processing
@@ -225,7 +230,12 @@ def image2noise_new(
 
     # Store original shape for later reshaping
     original_shape = tensor_image.shape
-    num_channels = original_shape[-1]  # Should be 4 for RGBA
+    if len(original_shape) != 3:
+        raise ValueError(f"Expected tensor_image to have 3 dimensions (H,W,C), got shape {original_shape}")
+    
+    num_channels = original_shape[-1]
+    if num_channels != 4:
+        raise ValueError(f"Expected tensor_image to have 4 channels (RGBA), got {num_channels}")
 
     # If no mask provided, use the entire image for color palette
     if mask_tensor is None:
@@ -275,6 +285,9 @@ def image2noise_new(
 
     # Create new noise image using the color palette
     noise_image = color_palette[random_indices].reshape(original_shape)
+    
+    if noise_image.shape != original_shape:
+        raise ValueError(f"Shape mismatch after palette lookup. Expected {original_shape}, got {noise_image.shape}")
 
     # Apply black mix if specified
     if black_mix > 0.0:
