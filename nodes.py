@@ -251,12 +251,29 @@ def image2noise_new(
         # Move to CUDA after processing
         mask_tensor = mask_tensor.cuda()
 
+    # Validate mask tensor shape
+    if mask_tensor is not None:
+        if len(mask_tensor.shape) != 2:
+            raise ValueError(f"Expected mask_tensor to have 2 dimensions (H,W), got shape {mask_tensor.shape}")
+        if mask_tensor.shape != (image.height, image.width):
+            raise ValueError(f"Mask shape mismatch. Expected ({image.height}, {image.width}), got {mask_tensor.shape}")
+
     # Reshape tensor_image to [H*W, C]
     flat_image = tensor_image.reshape(-1, num_channels)
     flat_mask = mask_tensor.reshape(-1)
+    
+    # Validate flattened shapes
+    expected_pixels = original_shape[0] * original_shape[1]
+    if flat_image.shape[0] != expected_pixels:
+        raise ValueError(f"Flattened image has wrong number of pixels. Expected {expected_pixels}, got {flat_image.shape[0]}")
+    if flat_mask.shape[0] != expected_pixels:
+        raise ValueError(f"Flattened mask has wrong number of pixels. Expected {expected_pixels}, got {flat_mask.shape[0]}")
 
     # Extract colors from unmasked regions for palette generation
     unmasked_indices = torch.nonzero(flat_mask == 0).squeeze(1)
+    
+    if unmasked_indices.dim() != 1:
+        raise ValueError(f"Unexpected unmasked_indices shape. Expected 1D tensor, got {unmasked_indices.dim()}D")
 
     # Get color palette from unmasked regions
     if len(unmasked_indices) > 0:
@@ -283,6 +300,10 @@ def image2noise_new(
     num_pixels = original_shape[0] * original_shape[1]
     random_indices = torch.randint(0, len(color_palette), (num_pixels,), device='cuda')
 
+    # Validate color palette shape
+    if len(color_palette.shape) != 2 or color_palette.shape[1] != num_channels:
+        raise ValueError(f"Color palette has invalid shape. Expected (N,{num_channels}), got {color_palette.shape}")
+        
     # Create new noise image using the color palette
     noise_image = color_palette[random_indices].reshape(original_shape)
     
@@ -299,6 +320,8 @@ def image2noise_new(
 
     # Apply Gaussian blur if specified
     if gaussian_mix > 0:
+        if len(noise_image.shape) != 3:
+            raise ValueError(f"Expected noise_image to have 3 dimensions before Gaussian blur, got shape {noise_image.shape}")
         import torch.nn.functional as F
         kernel_size = int(gaussian_mix * 2 + 1)
         padding = kernel_size // 2
